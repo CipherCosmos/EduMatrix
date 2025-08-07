@@ -1,7 +1,8 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, status
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, status, WebSocket, WebSocketDisconnect
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
-from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
@@ -15,20 +16,86 @@ from passlib.context import CryptContext
 import csv
 import io
 from fastapi.responses import StreamingResponse
+from contextlib import asynccontextmanager
+import asyncio
+from functools import lru_cache
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
-# MongoDB connection
-mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
+# MongoDB connection with optimized settings
+mongo_url = os.environ.get('MONGO_URL', 'mongodb://localhost:27017')
+client = AsyncIOMotorClient(
+    mongo_url,
+    maxPoolSize=50,  # Increased connection pool
+    minPoolSize=10,  # Minimum connections
+    maxIdleTimeMS=30000,  # Keep connections alive longer
+    serverSelectionTimeoutMS=5000,  # Faster server selection
+    connectTimeoutMS=10000,  # Faster connection timeout
+    socketTimeoutMS=30000,  # Socket timeout
+    waitQueueTimeoutMS=5000,  # Wait queue timeout
+    retryWrites=True,  # Enable retry writes
+    retryReads=True,  # Enable retry reads
+)
+db = client[os.environ.get('DB_NAME', 'edumatrix')]
 
-# Create the main app without a prefix
-app = FastAPI(title="CO-PO Student Performance Tracker")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    # Create indexes for better query performance
+    try:
+        await db.users.create_index("email", unique=True)
+        await db.users.create_index("role")
+        await db.programs.create_index("name")
+        await db.courses.create_index("program_id")
+        await db.courses.create_index("semester")
+        await db.course_outcomes.create_index("course_id")
+        await db.program_outcomes.create_index("po_code")
+        await db.co_po_maps.create_index("co_id")
+        await db.co_po_maps.create_index("po_id")
+        await db.exams.create_index("course_id")
+        await db.questions.create_index("exam_id")
+        await db.questions.create_index("co_id")
+        await db.student_marks.create_index("student_id")
+        await db.student_marks.create_index("question_id")
+        logging.info("Database indexes created successfully")
+    except Exception as e:
+        logging.warning(f"Some indexes may already exist: {e}")
+    
+    yield
+    # Shutdown
+    client.close()
+
+# Create the main app with performance optimizations
+app = FastAPI(
+    title="CO-PO Student Performance Tracker", 
+    lifespan=lifespan,
+    docs_url="/docs",
+    redoc_url="/redoc"
+)
+
+# Add GZip compression middleware for faster responses
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 # Create a router with the /api prefix
 api_router = APIRouter(prefix="/api")
+
+# WebSocket endpoint to handle connection attempts
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    try:
+        while True:
+            # Keep the connection alive but don't process any messages
+            data = await websocket.receive_text()
+            # Echo back to acknowledge receipt
+            await websocket.send_text(f"Message received: {data}")
+    except WebSocketDisconnect:
+        # Connection closed normally
+        pass
+    except Exception as e:
+        # Handle any other errors
+        logging.warning(f"WebSocket error: {e}")
 
 # Auth configuration
 SECRET_KEY = "your-secret-key-change-this-in-production"
@@ -38,13 +105,36 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 30
 security = HTTPBearer()
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-# Pydantic Models
+# Cache for frequently accessed data
+_cache = {}
+
+def get_cache_key(prefix: str, key: str) -> str:
+    return f"{prefix}:{key}"
+
+async def get_cached_data(cache_key: str, ttl: int = 300):
+    """Get data from cache with TTL"""
+    if cache_key in _cache:
+        data, timestamp = _cache[cache_key]
+        if datetime.utcnow().timestamp() - timestamp < ttl:
+            return data
+        else:
+            del _cache[cache_key]
+    return None
+
+def set_cached_data(cache_key: str, data: Any):
+    """Set data in cache with timestamp"""
+    _cache[cache_key] = (data, datetime.utcnow().timestamp())
+
+# Optimized Pydantic Models with better performance
 class UserBase(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name: str
     email: EmailStr
     role: str  # student, teacher, admin
     created_at: datetime = Field(default_factory=datetime.utcnow)
+    
+    class Config:
+        from_attributes = True  # Faster serialization
 
 class UserCreate(BaseModel):
     name: str
@@ -53,22 +143,37 @@ class UserCreate(BaseModel):
     role: str
     semester: Optional[int] = None
     program_id: Optional[str] = None
+    
+    class Config:
+        from_attributes = True
 
 class UserLogin(BaseModel):
     email: EmailStr
     password: str
+    
+    class Config:
+        from_attributes = True
 
 class Token(BaseModel):
     access_token: str
     token_type: str
+    
+    class Config:
+        from_attributes = True
 
 class Program(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name: str
     created_at: datetime = Field(default_factory=datetime.utcnow)
+    
+    class Config:
+        from_attributes = True
 
 class ProgramCreate(BaseModel):
     name: str
+    
+    class Config:
+        from_attributes = True
 
 class Course(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -76,11 +181,17 @@ class Course(BaseModel):
     semester: int
     program_id: str
     created_at: datetime = Field(default_factory=datetime.utcnow)
+    
+    class Config:
+        from_attributes = True
 
 class CourseCreate(BaseModel):
     name: str
     semester: int
     program_id: str
+    
+    class Config:
+        from_attributes = True
 
 class CourseOutcome(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -88,31 +199,49 @@ class CourseOutcome(BaseModel):
     co_code: str  # CO1, CO2, etc.
     description: str
     created_at: datetime = Field(default_factory=datetime.utcnow)
+    
+    class Config:
+        from_attributes = True
 
 class CourseOutcomeCreate(BaseModel):
     course_id: str
     co_code: str
     description: str
+    
+    class Config:
+        from_attributes = True
 
 class ProgramOutcome(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     po_code: str  # PO1, PO2, etc.
     description: str
     created_at: datetime = Field(default_factory=datetime.utcnow)
+    
+    class Config:
+        from_attributes = True
 
 class ProgramOutcomeCreate(BaseModel):
     po_code: str
     description: str
+    
+    class Config:
+        from_attributes = True
 
 class COPOMap(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     co_id: str
     po_id: str
     created_at: datetime = Field(default_factory=datetime.utcnow)
+    
+    class Config:
+        from_attributes = True
 
 class COPOMapCreate(BaseModel):
     co_id: str
     po_id: str
+    
+    class Config:
+        from_attributes = True
 
 class Exam(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -120,11 +249,17 @@ class Exam(BaseModel):
     exam_type: str  # Internal, Final
     exam_date: datetime
     created_at: datetime = Field(default_factory=datetime.utcnow)
+    
+    class Config:
+        from_attributes = True
 
 class ExamCreate(BaseModel):
     course_id: str
     exam_type: str
     exam_date: datetime
+    
+    class Config:
+        from_attributes = True
 
 class Question(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -134,6 +269,9 @@ class Question(BaseModel):
     co_id: str
     po_ids: List[str] = []
     created_at: datetime = Field(default_factory=datetime.utcnow)
+    
+    class Config:
+        from_attributes = True
 
 class QuestionCreate(BaseModel):
     exam_id: str
@@ -141,6 +279,9 @@ class QuestionCreate(BaseModel):
     max_marks: float
     co_id: str
     po_ids: List[str] = []
+    
+    class Config:
+        from_attributes = True
 
 class StudentMarks(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -148,11 +289,17 @@ class StudentMarks(BaseModel):
     question_id: str
     marks_obtained: float
     created_at: datetime = Field(default_factory=datetime.utcnow)
+    
+    class Config:
+        from_attributes = True
 
 class StudentMarksCreate(BaseModel):
     student_id: str
     question_id: str
     marks_obtained: float
+    
+    class Config:
+        from_attributes = True
 
 class Student(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -164,6 +311,9 @@ class Student(BaseModel):
     program_id: str
     course_ids: List[str] = []
     created_at: datetime = Field(default_factory=datetime.utcnow)
+    
+    class Config:
+        from_attributes = True
 
 class StudentCreate(BaseModel):
     name: str
@@ -173,6 +323,9 @@ class StudentCreate(BaseModel):
     semester: int
     program_id: str
     course_ids: List[str] = []
+    
+    class Config:
+        from_attributes = True
 
 class Teacher(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -181,12 +334,18 @@ class Teacher(BaseModel):
     password_hash: str
     assigned_courses: List[str] = []
     created_at: datetime = Field(default_factory=datetime.utcnow)
+    
+    class Config:
+        from_attributes = True
 
 class TeacherCreate(BaseModel):
     name: str
     email: EmailStr
     password: str
     assigned_courses: List[str] = []
+    
+    class Config:
+        from_attributes = True
 
 # Auth helper functions
 def verify_password(plain_password, hashed_password):
@@ -293,8 +452,35 @@ async def create_program(program: ProgramCreate, current_user: dict = Depends(re
 
 @api_router.get("/programs", response_model=List[Program])
 async def get_programs(current_user: dict = Depends(get_current_user)):
-    programs = await db.programs.find().to_list(1000)
-    return [Program(**program) for program in programs]
+    # Check cache first
+    cache_key = get_cache_key("programs", "all")
+    cached_data = await get_cached_data(cache_key, ttl=60)  # Cache for 1 minute
+    if cached_data:
+        return cached_data
+    
+    # Optimized query with projection
+    programs = await db.programs.find({}, {"_id": 0}).to_list(1000)
+    result = [Program(**program) for program in programs]
+    
+    # Cache the result
+    set_cached_data(cache_key, result)
+    return result
+
+@api_router.get("/public/programs", response_model=List[Program])
+async def get_public_programs():
+    # Check cache first
+    cache_key = get_cache_key("public_programs", "all")
+    cached_data = await get_cached_data(cache_key, ttl=60)  # Cache for 1 minute
+    if cached_data:
+        return cached_data
+    
+    # Optimized query with projection
+    programs = await db.programs.find({}, {"_id": 0}).to_list(1000)
+    result = [Program(**program) for program in programs]
+    
+    # Cache the result
+    set_cached_data(cache_key, result)
+    return result
 
 # Course routes
 @api_router.post("/courses", response_model=Course)
@@ -306,13 +492,35 @@ async def create_course(course: CourseCreate, current_user: dict = Depends(requi
 
 @api_router.get("/courses", response_model=List[Course])
 async def get_courses(current_user: dict = Depends(get_current_user)):
-    courses = await db.courses.find().to_list(1000)
-    return [Course(**course) for course in courses]
+    # Check cache first
+    cache_key = get_cache_key("courses", "all")
+    cached_data = await get_cached_data(cache_key, ttl=60)  # Cache for 1 minute
+    if cached_data:
+        return cached_data
+    
+    # Optimized query with projection
+    courses = await db.courses.find({}, {"_id": 0}).to_list(1000)
+    result = [Course(**course) for course in courses]
+    
+    # Cache the result
+    set_cached_data(cache_key, result)
+    return result
 
 @api_router.get("/courses/program/{program_id}", response_model=List[Course])
 async def get_courses_by_program(program_id: str, current_user: dict = Depends(get_current_user)):
-    courses = await db.courses.find({"program_id": program_id}).to_list(1000)
-    return [Course(**course) for course in courses]
+    # Check cache first
+    cache_key = get_cache_key("courses", f"program_{program_id}")
+    cached_data = await get_cached_data(cache_key, ttl=60)  # Cache for 1 minute
+    if cached_data:
+        return cached_data
+    
+    # Optimized query with projection and index usage
+    courses = await db.courses.find({"program_id": program_id}, {"_id": 0}).to_list(1000)
+    result = [Course(**course) for course in courses]
+    
+    # Cache the result
+    set_cached_data(cache_key, result)
+    return result
 
 # Course Outcome routes
 @api_router.post("/course-outcomes", response_model=CourseOutcome)
@@ -324,8 +532,19 @@ async def create_course_outcome(co: CourseOutcomeCreate, current_user: dict = De
 
 @api_router.get("/course-outcomes/course/{course_id}", response_model=List[CourseOutcome])
 async def get_course_outcomes_by_course(course_id: str, current_user: dict = Depends(get_current_user)):
-    cos = await db.course_outcomes.find({"course_id": course_id}).to_list(1000)
-    return [CourseOutcome(**co) for co in cos]
+    # Check cache first
+    cache_key = get_cache_key("course_outcomes", f"course_{course_id}")
+    cached_data = await get_cached_data(cache_key, ttl=60)  # Cache for 1 minute
+    if cached_data:
+        return cached_data
+    
+    # Optimized query with projection and index usage
+    cos = await db.course_outcomes.find({"course_id": course_id}, {"_id": 0}).to_list(1000)
+    result = [CourseOutcome(**co) for co in cos]
+    
+    # Cache the result
+    set_cached_data(cache_key, result)
+    return result
 
 # Program Outcome routes
 @api_router.post("/program-outcomes", response_model=ProgramOutcome)
@@ -333,12 +552,29 @@ async def create_program_outcome(po: ProgramOutcomeCreate, current_user: dict = 
     po_dict = po.dict()
     po_obj = ProgramOutcome(**po_dict)
     await db.program_outcomes.insert_one(po_obj.dict())
+    
+    # Clear cache after creating new program outcome
+    cache_key = get_cache_key("program_outcomes", "all")
+    if cache_key in _cache:
+        del _cache[cache_key]
+    
     return po_obj
 
 @api_router.get("/program-outcomes", response_model=List[ProgramOutcome])
 async def get_program_outcomes(current_user: dict = Depends(get_current_user)):
-    pos = await db.program_outcomes.find().to_list(1000)
-    return [ProgramOutcome(**po) for po in pos]
+    # Check cache first
+    cache_key = get_cache_key("program_outcomes", "all")
+    cached_data = await get_cached_data(cache_key, ttl=60)  # Cache for 1 minute
+    if cached_data:
+        return cached_data
+    
+    # Optimized query with projection
+    pos = await db.program_outcomes.find({}, {"_id": 0}).to_list(1000)
+    result = [ProgramOutcome(**po) for po in pos]
+    
+    # Cache the result
+    set_cached_data(cache_key, result)
+    return result
 
 # CO-PO Mapping routes
 @api_router.post("/co-po-map", response_model=COPOMap)
@@ -520,10 +756,20 @@ async def create_student(student: StudentCreate, current_user: dict = Depends(re
 
 @api_router.get("/admin/students", response_model=List[dict])
 async def get_all_students(current_user: dict = Depends(require_role("admin"))):
-    students = await db.users.find({"role": "student"}).to_list(1000)
-    for student in students:
-        student.pop("password_hash", None)
-        student.pop("_id", None)  # Remove MongoDB ObjectId
+    # Check cache first
+    cache_key = get_cache_key("admin_students", "all")
+    cached_data = await get_cached_data(cache_key, ttl=30)  # Cache for 30 seconds
+    if cached_data:
+        return cached_data
+    
+    # Optimized query with projection to exclude sensitive data
+    students = await db.users.find(
+        {"role": "student"}, 
+        {"password_hash": 0, "_id": 0}
+    ).to_list(1000)
+    
+    # Cache the result
+    set_cached_data(cache_key, students)
     return students
 
 # Teacher management routes (Admin only)
@@ -544,14 +790,30 @@ async def create_teacher(teacher: TeacherCreate, current_user: dict = Depends(re
     teacher_dict["created_at"] = datetime.utcnow()
     
     await db.users.insert_one(teacher_dict)
+    
+    # Clear cache after creating new teacher
+    cache_key = get_cache_key("admin_teachers", "all")
+    if cache_key in _cache:
+        del _cache[cache_key]
+    
     return Teacher(**teacher_dict)
 
 @api_router.get("/admin/teachers", response_model=List[dict])
 async def get_all_teachers(current_user: dict = Depends(require_role("admin"))):
-    teachers = await db.users.find({"role": "teacher"}).to_list(1000)
-    for teacher in teachers:
-        teacher.pop("password_hash", None)
-        teacher.pop("_id", None)  # Remove MongoDB ObjectId
+    # Check cache first
+    cache_key = get_cache_key("admin_teachers", "all")
+    cached_data = await get_cached_data(cache_key, ttl=30)  # Cache for 30 seconds
+    if cached_data:
+        return cached_data
+    
+    # Optimized query with projection to exclude sensitive data
+    teachers = await db.users.find(
+        {"role": "teacher"}, 
+        {"password_hash": 0, "_id": 0}
+    ).to_list(1000)
+    
+    # Cache the result
+    set_cached_data(cache_key, teachers)
     return teachers
 
 # Include the router in the main app
@@ -565,13 +827,46 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Configure logging
+# Configure logging with performance optimizations
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler('app.log', mode='a')
+    ]
 )
 logger = logging.getLogger(__name__)
 
-@app.on_event("shutdown")
-async def shutdown_db_client():
-    client.close()
+# Performance monitoring
+import time
+from functools import wraps
+
+def performance_monitor(func):
+    @wraps(func)
+    async def wrapper(*args, **kwargs):
+        start_time = time.time()
+        try:
+            result = await func(*args, **kwargs)
+            execution_time = time.time() - start_time
+            if execution_time > 1.0:  # Log slow operations
+                logger.warning(f"Slow operation detected: {func.__name__} took {execution_time:.2f}s")
+            return result
+        except Exception as e:
+            execution_time = time.time() - start_time
+            logger.error(f"Error in {func.__name__} after {execution_time:.2f}s: {e}")
+            raise
+    return wrapper
+
+# Apply performance monitoring to key endpoints
+
+# Add main block to run the server
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(
+        "server:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=True,
+        log_level="info"
+    )

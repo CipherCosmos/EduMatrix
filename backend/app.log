@@ -1,0 +1,17 @@
+2025-08-08 00:23:12,711 - root - INFO - Database indexes created successfully
+2025-08-08 00:23:48,306 - root - INFO - Database indexes created successfully
+2025-08-08 00:24:30,262 - passlib.handlers.bcrypt - WARNING - (trapped) error reading bcrypt version
+Traceback (most recent call last):
+  File "C:\Users\svm19\AppData\Local\Programs\Python\Python313\Lib\site-packages\passlib\handlers\bcrypt.py", line 620, in _load_backend_mixin
+    version = _bcrypt.__about__.__version__
+              ^^^^^^^^^^^^^^^^^
+AttributeError: module 'bcrypt' has no attribute '__about__'
+2025-08-08 00:26:44,666 - root - INFO - Database indexes created successfully
+2025-08-08 00:29:03,946 - root - INFO - Database indexes created successfully
+2025-08-08 00:29:17,526 - root - INFO - Database indexes created successfully
+2025-08-08 00:29:44,012 - passlib.handlers.bcrypt - WARNING - (trapped) error reading bcrypt version
+Traceback (most recent call last):
+  File "C:\Users\svm19\AppData\Local\Programs\Python\Python313\Lib\site-packages\passlib\handlers\bcrypt.py", line 620, in _load_backend_mixin
+    version = _bcrypt.__about__.__version__
+              ^^^^^^^^^^^^^^^^^
+AttributeError: module 'bcrypt' has no attribute '__about__'

@@ -2,7 +2,7 @@ import React, { useState, useEffect, createContext, useContext } from "react";
 import "./App.css";
 import axios from "axios";
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
+const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || 'http://127.0.0.1:8000';
 const API = `${BACKEND_URL}/api`;
 
 // Auth Context
@@ -103,7 +103,7 @@ const Login = () => {
 
   const fetchPrograms = async () => {
     try {
-      const response = await axios.get(`${API}/programs`);
+      const response = await axios.get(`${API}/public/programs`);
       setPrograms(response.data);
     } catch (error) {
       console.error('Failed to fetch programs:', error);
