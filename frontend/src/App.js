@@ -1352,7 +1352,7 @@ const StudentDashboard = () => {
                 <div className="text-2xl font-bold text-red-600">
                   {Object.values(coAttainment).filter(data => data.attainment_percentage < 40).length}
                 </div>
-                <p className="text-sm text-gray-600">Needs Improvement (<40%)</p>
+                <p className="text-sm text-gray-600">Needs Improvement (&lt;40%)</p>
               </div>
             </div>
           </div>
