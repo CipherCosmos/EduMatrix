@@ -277,7 +277,11 @@ async def login(user: UserLogin):
 
 @api_router.get("/auth/me")
 async def get_me(current_user: dict = Depends(get_current_user)):
-    return current_user
+    # Remove MongoDB ObjectId for JSON serialization
+    user_data = current_user.copy()
+    user_data.pop("_id", None)
+    user_data.pop("password_hash", None)
+    return user_data
 
 # Program routes
 @api_router.post("/programs", response_model=Program)
