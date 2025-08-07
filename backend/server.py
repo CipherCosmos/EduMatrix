@@ -551,6 +551,7 @@ async def get_all_teachers(current_user: dict = Depends(require_role("admin"))):
     teachers = await db.users.find({"role": "teacher"}).to_list(1000)
     for teacher in teachers:
         teacher.pop("password_hash", None)
+        teacher.pop("_id", None)  # Remove MongoDB ObjectId
     return teachers
 
 # Include the router in the main app
