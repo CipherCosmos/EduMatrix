@@ -64,7 +64,7 @@ class BackendTester:
         """Test JWT Authentication System"""
         print("\n🔐 Testing JWT Authentication System...")
         
-        # Test user registration - Admin
+        # Test user registration - Admin (or login if already exists)
         admin_data = {
             "name": "Dr. Sarah Johnson",
             "email": "admin@university.edu",
@@ -76,10 +76,19 @@ class BackendTester:
         if success and "access_token" in response:
             self.admin_token = response["access_token"]
             self.log_result("Admin Registration", True, f"Token received")
+        elif status == 400 and "already registered" in response.get("detail", ""):
+            # User already exists, try login
+            login_data = {"email": admin_data["email"], "password": admin_data["password"]}
+            success, response, status = self.make_request("POST", "/auth/login", login_data)
+            if success and "access_token" in response:
+                self.admin_token = response["access_token"]
+                self.log_result("Admin Registration", True, f"User exists, logged in successfully")
+            else:
+                self.log_result("Admin Registration", False, f"Login failed: {status}, {response}")
         else:
             self.log_result("Admin Registration", False, f"Status: {status}, Response: {response}")
         
-        # Test user registration - Teacher
+        # Test user registration - Teacher (or login if already exists)
         teacher_data = {
             "name": "Prof. Michael Chen",
             "email": "teacher@university.edu", 
@@ -91,10 +100,19 @@ class BackendTester:
         if success and "access_token" in response:
             self.teacher_token = response["access_token"]
             self.log_result("Teacher Registration", True, f"Token received")
+        elif status == 400 and "already registered" in response.get("detail", ""):
+            # User already exists, try login
+            login_data = {"email": teacher_data["email"], "password": teacher_data["password"]}
+            success, response, status = self.make_request("POST", "/auth/login", login_data)
+            if success and "access_token" in response:
+                self.teacher_token = response["access_token"]
+                self.log_result("Teacher Registration", True, f"User exists, logged in successfully")
+            else:
+                self.log_result("Teacher Registration", False, f"Login failed: {status}, {response}")
         else:
             self.log_result("Teacher Registration", False, f"Status: {status}, Response: {response}")
         
-        # Test user registration - Student
+        # Test user registration - Student (or login if already exists)
         student_data = {
             "name": "Alice Smith",
             "email": "alice.smith@student.edu",
@@ -108,10 +126,19 @@ class BackendTester:
         if success and "access_token" in response:
             self.student_token = response["access_token"]
             self.log_result("Student Registration", True, f"Token received")
+        elif status == 400 and "already registered" in response.get("detail", ""):
+            # User already exists, try login
+            login_data = {"email": student_data["email"], "password": student_data["password"]}
+            success, response, status = self.make_request("POST", "/auth/login", login_data)
+            if success and "access_token" in response:
+                self.student_token = response["access_token"]
+                self.log_result("Student Registration", True, f"User exists, logged in successfully")
+            else:
+                self.log_result("Student Registration", False, f"Login failed: {status}, {response}")
         else:
             self.log_result("Student Registration", False, f"Status: {status}, Response: {response}")
         
-        # Test login
+        # Test login with fresh credentials
         login_data = {
             "email": "admin@university.edu",
             "password": "SecureAdmin123!"
