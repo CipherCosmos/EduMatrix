@@ -523,6 +523,7 @@ async def get_all_students(current_user: dict = Depends(require_role("admin"))):
     students = await db.users.find({"role": "student"}).to_list(1000)
     for student in students:
         student.pop("password_hash", None)
+        student.pop("_id", None)  # Remove MongoDB ObjectId
     return students
 
 # Teacher management routes (Admin only)
